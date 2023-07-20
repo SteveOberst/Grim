@@ -6,6 +6,7 @@ import ac.grim.grimac.checks.type.PacketCheck;
 import ac.grim.grimac.events.packets.CheckManagerListener;
 import ac.grim.grimac.player.GrimPlayer;
 import ac.grim.grimac.utils.collisions.CollisionData;
+import ac.grim.grimac.utils.collisions.HitboxData;
 import ac.grim.grimac.utils.collisions.datatypes.CollisionBox;
 import ac.grim.grimac.utils.collisions.datatypes.SimpleCollisionBox;
 import ac.grim.grimac.utils.data.HitData;
@@ -27,6 +28,7 @@ import lombok.NonNull;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
@@ -57,24 +59,26 @@ public class IllegalInteract extends Check implements PacketCheck {
             final Vector3i blockPos = packet.getBlockPosition();
             final Location eyePos = bukkitPlayer.getEyeLocation();
             // return if player is interacting with the block his head is stuck in
-            if(isBlockInHead(blockPos, eyePos.getX(), eyePos.getY(), eyePos.getZ())) return;
+            if (isBlockInHead(blockPos, eyePos.getX(), eyePos.getY(), eyePos.getZ())) return;
+
+            final WrappedBlockState blockState = world.getWrappedBlockStateAt(blockPos);
             final Block block = bukkitPlayer.getWorld().getBlockAt(blockPos.x, blockPos.y, blockPos.z);
             final Material bukkitType = block.getType();
+            // maybe cancel? however, this will cause issues with intentional ghost blocks so we just ignore it here
+            if (!matches(bukkitType, blockState.getType())) return;
             if (!isInteractable(bukkitType)) return;
 
-            final HitData hitData = CheckManagerListener.getNearestHitResult(player, getHeldItem(bukkitPlayer, packet.getHand()), false);
+            final InteractionHand hand = packet.getHand();
+            final HitData hitData = CheckManagerListener.getNearestHitResult(player, getHeldItem(bukkitPlayer, hand), false);
 
-            if(!didRayTraceHit(block) || hitData == null) {
+            if (!didRayTraceHit(bukkitPlayer, hand, block, blockState) || hitData == null) {
                 // wow, he doesn't even bother looking at the block, we'll punish that
-                flagAndAlert(String.format("yaw=%s pitch=%s", player.xRot, player.yRot));
+                flagAndAlert(String.format("block=%s", bukkitType));
                 event.setCancelled(true);
                 return;
             }
 
-            final WrappedBlockState blockState = world.getWrappedBlockStateAt(blockPos);
-            final CollisionData blockCollisionData = CollisionData.getData(StateTypes.getByName(bukkitType.toString()));
-            final CollisionBox collisionBox = blockCollisionData.getMovementCollisionBox(player, player.getClientVersion(), blockState, blockPos.x, blockPos.y, blockPos.z);
-
+            final CollisionBox collisionBox = HitboxData.getBlockHitbox(player, getHeldItem(bukkitPlayer, hand), player.getClientVersion(), blockState, blockPos.x, blockPos.y, blockPos.z);
             final Vector hitVec = hitData.getBlockHitLocation();
             // create a small box at the hitVec
             final SimpleCollisionBox intersectionCollisionBox = new SimpleCollisionBox(
@@ -82,15 +86,17 @@ public class IllegalInteract extends Check implements PacketCheck {
                     hitVec.getX() + LENIENCY, hitVec.getY() + LENIENCY, hitVec.getZ() + LENIENCY
             );
 
-            if(!collisionBox.isCollided(intersectionCollisionBox)) {
+            bukkitPlayer.getWorld().spawnParticle(Particle.FIREWORKS_SPARK, new Location(bukkitPlayer.getWorld(), hitVec.getX(), hitVec.getY(), hitVec.getZ()), 20, 0, 0, 0, 0);
+
+            if (!collisionBox.isCollided(intersectionCollisionBox)) {
                 flagAndAlert(String.format("block=%s", bukkitType));
                 event.setCancelled(true);
             }
         }
     }
 
-    private boolean didRayTraceHit(final Block block) {
-
+    private boolean didRayTraceHit(final Player bukkitPlayer, final InteractionHand hand, final Block block, final WrappedBlockState blockState) {
+        final Location blockPos = block.getLocation();
         List<Vector3f> possibleLookDirs = new ArrayList<>(Arrays.asList(
                 new Vector3f(player.lastXRot, player.yRot, 0),
                 new Vector3f(player.xRot, player.yRot, 0)
@@ -112,14 +118,23 @@ public class IllegalInteract extends Check implements PacketCheck {
                 Vector3d starting = new Vector3d(player.x, player.y + d, player.z);
                 // xRot and yRot are a tick behind
                 Ray trace = new Ray(player, starting.getX(), starting.getY(), starting.getZ(), lookDir.getX(), lookDir.getY());
-                final SimpleCollisionBox blockBox = new SimpleCollisionBox(block.getX(), block.getY(), block.getZ(), block.getX() + 1.d, block.getY() + 1.d, block.getZ() + 1.d);
+                final CollisionBox collisionBox = HitboxData.getBlockHitbox(player, getHeldItem(bukkitPlayer, hand), player.getClientVersion(), blockState, (int) blockPos.getX(), (int) blockPos.getY(), (int) blockPos.getZ());
+                // if the returned collision box is a simple collision box use it, otherwise default to a full block
+                final SimpleCollisionBox blockBox = collisionBox instanceof SimpleCollisionBox
+                        ? (SimpleCollisionBox) collisionBox
+                        : new SimpleCollisionBox(block.getX(), block.getY(), block.getZ(), block.getX() + 1.d, block.getY() + 1.d, block.getZ() + 1.d);
+
                 for (Vector vector : trace.traverse(5, 0.1)) {
-                    if(ReachUtils.isVecInside(blockBox, vector)) return true;
+                    if (ReachUtils.isVecInside(blockBox, vector)) return true;
                 }
             }
         }
 
         return false;
+    }
+
+    private boolean matches(final Material bukkitType, final StateType stateType) {
+        return StateTypes.getByName(bukkitType.toString()) == stateType;
     }
 
     public static boolean isBlockInHead(final @NonNull Vector3i loc, final double x, final double y, final double z) {
@@ -143,6 +158,9 @@ public class IllegalInteract extends Check implements PacketCheck {
                 || str.equals("REDSTONE_WIRE")
                 || str.equals("PUMPKIN")
                 || str.equals("MOVING_PISTON")
+                // Exclude lever and buttons for now due to hitbox inconsistencies
+                || str.endsWith("_BUTTON")
+                || str.equals("LEVER")
         );
     }
 }
