@@ -65,4 +65,11 @@ public class ComplexCollisionBox implements CollisionBox {
     public boolean isFullBlock() {
         return false;
     }
+
+    @Override
+    public String toString() {
+        return "ComplexCollisionBox{" +
+                "boxes=" + boxes +
+                '}';
+    }
 }

@@ -15,13 +15,21 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package ac.grim.grimac.checks.impl.combat;
 
+import ac.grim.grimac.GrimAC;
 import ac.grim.grimac.checks.Check;
 import ac.grim.grimac.checks.CheckData;
 import ac.grim.grimac.checks.type.PacketCheck;
 import ac.grim.grimac.player.GrimPlayer;
+import ac.grim.grimac.utils.collisions.CollisionData;
+import ac.grim.grimac.utils.collisions.HitboxData;
+import ac.grim.grimac.utils.collisions.datatypes.CollisionBox;
+import ac.grim.grimac.utils.collisions.datatypes.NoCollisionBox;
 import ac.grim.grimac.utils.collisions.datatypes.SimpleCollisionBox;
 import ac.grim.grimac.utils.data.packetentity.PacketEntity;
+import ac.grim.grimac.utils.latency.CompensatedWorld;
 import ac.grim.grimac.utils.math.VectorUtils;
+import ac.grim.grimac.utils.nmsutil.GetBoundingBox;
+import ac.grim.grimac.utils.nmsutil.Ray;
 import ac.grim.grimac.utils.nmsutil.ReachUtils;
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType;
@@ -29,9 +37,14 @@ import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.player.ClientVersion;
 import com.github.retrooper.packetevents.protocol.player.GameMode;
+import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
+import com.github.retrooper.packetevents.protocol.world.states.type.StateType;
+import com.github.retrooper.packetevents.protocol.world.states.type.StateTypes;
 import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientInteractEntity;
 import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
+import org.bukkit.*;
+import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
 
 import java.util.*;
@@ -78,7 +91,7 @@ public class Reach extends Check implements PacketCheck {
                 }
                 return;
             }
-            
+
             // Dead entities cause false flags (https://github.com/GrimAnticheat/Grim/issues/546)
             if (entity.isDead) return;
 
@@ -203,25 +216,66 @@ public class Reach extends Check implements PacketCheck {
 
         for (Vector lookVec : possibleLookDirs) {
             for (double eye : player.getPossibleEyeHeights()) {
-                Vector eyePos = new Vector(from.getX(), from.getY() + eye, from.getZ());
-                Vector endReachPos = eyePos.clone().add(new Vector(lookVec.getX() * 6, lookVec.getY() * 6, lookVec.getZ() * 6));
+                Vector possibleEyePos = new Vector(from.getX(), from.getY() + eye, from.getZ());
+                Vector endReachPos = possibleEyePos.clone().add(new Vector(lookVec.getX() * 6, lookVec.getY() * 6, lookVec.getZ() * 6));
 
-                Vector intercept = ReachUtils.calculateIntercept(targetBox, eyePos, endReachPos).getFirst();
+                Vector intercept = ReachUtils.calculateIntercept(targetBox, possibleEyePos, endReachPos).getFirst();
 
-                if (ReachUtils.isVecInside(targetBox, eyePos)) {
+                if (ReachUtils.isVecInside(targetBox, possibleEyePos)) {
                     minDistance = 0;
                     break;
                 }
 
                 if (intercept != null) {
-                    minDistance = Math.min(eyePos.distance(intercept), minDistance);
+                    minDistance = Math.min(possibleEyePos.distance(intercept), minDistance);
                 }
+            }
+        }
+
+        final Vector eyePos = new Vector(from.x, from.y + player.getEyeHeight(), from.z);
+        final CompensatedWorld world = player.compensatedWorld;
+        final Ray trace = new Ray(player, eyePos.getX(), eyePos.getY(), eyePos.getZ(), player.xRot, player.yRot); // maybe use last rot?
+        boolean collides = false;
+        boolean hit = false;
+
+        for (final Vector vector : trace.traverse(5, 0.1)) {
+            final double rayIndexX = vector.getX();
+            final double rayIndexY = vector.getY();
+            final double rayIndexZ = vector.getZ();
+            final WrappedBlockState blockState = world.getWrappedBlockStateAt(vector.getX(), vector.getY(), vector.getZ());
+            final StateType type = blockState.getType();
+            if(type == StateTypes.WATER || type == StateTypes.LAVA) {
+                continue;
+            }
+
+            final CollisionBox collisionBox = HitboxData.getBlockHitboxNonOverride(player, player.getClientVersion(), blockState, (int) rayIndexX, (int) rayIndexY, (int) rayIndexZ);
+            final SimpleCollisionBox rayIndex = new SimpleCollisionBox(
+                    rayIndexX, rayIndexY, rayIndexZ,
+                    rayIndexX, rayIndexY, rayIndexZ
+            );
+
+            final Player bukkitPlayer = Bukkit.getPlayer(player.getUniqueId());
+            final World bukkitWorld = bukkitPlayer.getWorld();
+
+            if(!(collisionBox instanceof NoCollisionBox)) {
+                Bukkit.getScheduler().runTask(GrimAC.getPlugin(GrimAC.class), () -> bukkitWorld.setType(new Location(bukkitWorld, rayIndexX, rayIndexY, rayIndexZ), Material.STONE));
+            }
+            if (collisionBox.isCollided(rayIndex)) {
+                collides = true;
+            }
+
+            if(collisionBox.isCollided(targetBox)) {
+                hit = true;
+                break;
             }
         }
 
         // if the entity is not exempt and the entity is alive
         if ((!blacklisted.contains(reachEntity.type) && reachEntity.isLivingEntity()) || reachEntity.type == EntityTypes.END_CRYSTAL) {
-            if (minDistance == Double.MAX_VALUE) {
+            if(hit && collides) {
+                cancelBuffer = 1;
+                return "Through wall";
+            } else if (minDistance == Double.MAX_VALUE) {
                 cancelBuffer = 1;
                 return "Missed hitbox";
             } else if (minDistance > 3) {

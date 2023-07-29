@@ -66,4 +66,17 @@ public class DynamicCollisionBox implements CollisionBox {
     public void setVersion(ClientVersion version) {
         this.version = version;
     }
+
+    @Override
+    public String toString() {
+        return "DynamicCollisionBox{" +
+                "player=" + player +
+                ", box=" + box +
+                ", version=" + version +
+                ", block=" + block +
+                ", x=" + x +
+                ", y=" + y +
+                ", z=" + z +
+                '}';
+    }
 }

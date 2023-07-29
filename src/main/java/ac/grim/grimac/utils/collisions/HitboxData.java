@@ -12,6 +12,7 @@ import com.github.retrooper.packetevents.protocol.world.states.defaulttags.Block
 import com.github.retrooper.packetevents.protocol.world.states.enums.*;
 import com.github.retrooper.packetevents.protocol.world.states.type.StateType;
 import com.github.retrooper.packetevents.protocol.world.states.type.StateTypes;
+import com.google.common.annotations.Beta;
 
 import java.util.*;
 
@@ -235,5 +236,31 @@ public enum HitboxData {
 
         // Allow this class to override collision boxes when they aren't the same as regular boxes
         return HitboxData.getData(block.getType()).dynamic.fetch(player, heldItem, version, block, x, y, z).offset(x, y, z);
+    }
+
+    /**
+     * same as {@link #getBlockHitbox(GrimPlayer, StateType, ClientVersion, WrappedBlockState, int, int, int)}, however,
+     * it does not take overriden collision boxes into account and will default to the movement collision box if there
+     * is no simple collision box available in this class.
+     *
+     * <p> might create bypasses/falses due to less accurate hitbox results, use with caution
+     *
+     * @param player the player
+     * @param version the client version
+     * @param block the target block
+     * @param x x-coordinates of the block
+     * @param y y-coordinates of the block
+     * @param z z-coordinates of the block
+     * @return the blocks collision box
+     */
+    @Beta
+    public static CollisionBox getBlockHitboxNonOverride(GrimPlayer player, ClientVersion version, WrappedBlockState block, int x, int y, int z) {
+        final HitboxData data = getData(block.getType());
+
+        // Simple collision box to override
+        if (data != null && data.box != null)
+            return data.box.copy().offset(x, y, z);
+
+        return CollisionData.getRawData(block.getType()).getMovementCollisionBox(player, version, block, x, y, z);
     }
 }
